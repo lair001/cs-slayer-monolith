@@ -1,0 +1,166 @@
+plugins {
+	id 'java'
+	id 'org.springframework.boot' version '3.4.1'
+	id 'io.spring.dependency-management' version '1.1.7'
+	id 'org.liquibase.gradle' version "2.2.2"
+}
+
+group = 'com.cs_slayer'
+version = '0.0.1-SNAPSHOT'
+
+java {
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(21)
+	}
+}
+
+configurations {
+	compileOnly {
+		extendsFrom annotationProcessor
+	}
+}
+
+repositories {
+	mavenCentral()
+}
+
+sourceSets {
+	intTest {
+		java {
+			srcDirs = ['src/intTest/java']
+		}
+		compileClasspath += sourceSets.main.output
+		compileClasspath += configurations.testCompileClasspath
+		compileClasspath += configurations.intTestCompileClasspath
+
+		runtimeClasspath += sourceSets.main.output
+		runtimeClasspath += configurations.testRuntimeClasspath
+		runtimeClasspath += configurations.intTestRuntimeClasspath
+	}
+
+	unitTest {
+		java {
+			srcDirs = ['src/unitTest/java']
+		}
+		compileClasspath += sourceSets.main.output
+		compileClasspath += configurations.testCompileClasspath
+		compileClasspath += configurations.unitTestCompileClasspath
+
+		runtimeClasspath += sourceSets.main.output
+		runtimeClasspath += configurations.testRuntimeClasspath
+		runtimeClasspath += configurations.unitTestRuntimeClasspath
+	}
+}
+
+dependencies {
+	implementation 'org.springframework.boot:spring-boot-starter-data-jpa:3.4.1'
+	implementation 'org.springframework.boot:spring-boot-starter-security:3.4.1'
+	implementation 'org.springframework.boot:spring-boot-starter-validation:3.4.1'
+	implementation 'org.springframework.boot:spring-boot-starter-web:3.4.1'
+//	compileOnly 'org.projectlombok:lombok:1.18.36'
+//	annotationProcessor 'org.projectlombok:lombok:1.18.36'
+	runtimeOnly 'org.postgresql:postgresql:42.7.5'
+	unitTestImplementation 'org.junit.jupiter:junit-jupiter:5.11.4'
+	unitTestImplementation 'org.mockito:mockito-junit-jupiter:5.15.2'
+	intTestImplementation 'org.springframework.boot:spring-boot-starter-test:3.4.1'
+	intTestImplementation 'org.springframework.security:spring-security-test:6.4.2'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.11.4'
+	liquibaseRuntime 'org.liquibase:liquibase-core:4.31.0'
+	liquibaseRuntime 'org.postgresql:postgresql:42.7.5'
+	liquibaseRuntime 'info.picocli:picocli:4.7.6'
+}
+
+tasks.register('unitTest', Test) {
+	group 'Verification'
+	description 'Runs the unit tests.'
+	testClassesDirs = sourceSets.unitTest.output.classesDirs
+	classpath = sourceSets.unitTest.runtimeClasspath
+	useJUnitPlatform()
+
+	testLogging {
+		events "passed", "skipped", "failed"
+	}
+}
+
+test.dependsOn unitTest
+
+liquibase {
+	activities {
+		main {
+			changelogFile "src/main/resources/rdbms/changelog.yaml"
+			url 'jdbc:' + System.getenv('CSSM_RDBMS_PROTOCOL') + '://localhost:' + System.getenv('CSSM_RDBMS_PORT') + '/cssm'
+			username System.getenv('CSSM_RDBMS_USER')
+			password System.getenv('CSSM_RDBMS_PWD')
+		}
+	}
+}
+
+def connectToIntTestDb() {
+	liquibase {
+		activities {
+			main {
+				url 'jdbc:' + System.getenv('CSSM_RDBMS_PROTOCOL') + '://localhost:' + System.getenv('CSSM_RDBMS_PORT') + '/cssm-int-test'
+				username System.getenv('CSSM_INT_TEST_RDBMS_USER')
+				password System.getenv('CSSM_INT_TEST_RDBMS_PWD')
+			}
+		}
+	}
+}
+
+// dropAll should not be allowed in production
+tasks.register('checkWhetherDropAllIsAllowed') {
+	doFirst {
+		if (System.getenv("ALLOW_DROP_ALL") != "true") {
+			throw new GradleException("dropAll is not allowed in this environment.")
+		}
+	}
+}
+
+dropAll.dependsOn checkWhetherDropAllIsAllowed
+
+tasks.register('updateIntTestDb') {
+	group 'Liquibase'
+	description 'Deploy any changes in the changelog file that have not been deployed to the integration test database.'
+	doFirst() {
+		connectToIntTestDb()
+	}
+	finalizedBy update
+}
+
+tasks.register('dropAllIntTestDb') {
+	group 'Liquibase'
+	description 'Drop all database objects in the integration test database owned by the integration test user. Note that functions, procedures and packages are not dropped (Liquibase limitation)'
+	doFirst() {
+		connectToIntTestDb()
+	}
+	finalizedBy dropAll
+}
+
+tasks.register('baseline') {
+	group 'Liquibase'
+	description 'Baselines the database by running dropAll followed by update.'
+	dependsOn dropAll
+	dependsOn update
+}
+
+tasks.register('baselineIntTestDb') {
+	group 'Liquibase'
+	description 'Baselines the integration test database by running dropAllIntTestDb followed by updateIntTestDb.'
+	dependsOn dropAllIntTestDb
+	dependsOn updateIntTestDb
+}
+
+tasks.register('intTest', Test) {
+	group 'Verification'
+	description 'Runs the integration tests.'
+	dependsOn baselineIntTestDb
+	testClassesDirs = sourceSets.intTest.output.classesDirs
+	classpath = sourceSets.intTest.runtimeClasspath
+	useJUnitPlatform()
+
+	testLogging {
+		events "passed", "skipped", "failed"
+	}
+}
+
+test.dependsOn intTest
